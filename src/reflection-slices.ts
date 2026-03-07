@@ -9,7 +9,16 @@ export interface ReflectionMappedMemory {
   heading: string;
 }
 
-export function parseSectionBullets(markdown: string, heading: string): string[] {
+export interface ReflectionGovernanceEntry {
+  priority?: string;
+  status?: string;
+  area?: string;
+  summary: string;
+  details?: string;
+  suggestedAction?: string;
+}
+
+export function extractSectionMarkdown(markdown: string, heading: string): string {
   const lines = markdown.split(/\r?\n/);
   const headingNeedle = `## ${heading}`.toLowerCase();
   let inSection = false;
@@ -18,10 +27,21 @@ export function parseSectionBullets(markdown: string, heading: string): string[]
     const line = raw.trim();
     const lower = line.toLowerCase();
     if (lower.startsWith("## ")) {
+      if (inSection && lower !== headingNeedle) break;
       inSection = lower === headingNeedle;
       continue;
     }
     if (!inSection) continue;
+    collected.push(raw);
+  }
+  return collected.join("\n").trim();
+}
+
+export function parseSectionBullets(markdown: string, heading: string): string[] {
+  const lines = extractSectionMarkdown(markdown, heading).split(/\r?\n/);
+  const collected: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trim();
     if (line.startsWith("- ") || line.startsWith("* ")) {
       const normalized = line.slice(2).trim();
       if (normalized) collected.push(normalized);
@@ -72,11 +92,71 @@ export function extractReflectionLessons(reflectionText: string): string[] {
   return sanitizeReflectionSliceLines(parseSectionBullets(reflectionText, "Lessons & pitfalls (symptom / cause / fix / prevention)"));
 }
 
+export function extractReflectionLearningGovernanceCandidates(reflectionText: string): ReflectionGovernanceEntry[] {
+  const section = extractSectionMarkdown(reflectionText, "Learning governance candidates (.learnings / promotion / skill extraction)");
+  if (!section) return [];
+
+  const entryBlocks = section
+    .split(/(?=^###\s+Entry\b)/gim)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  const parsed = entryBlocks
+    .map(parseReflectionGovernanceEntry)
+    .filter((entry): entry is ReflectionGovernanceEntry => entry !== null);
+
+  if (parsed.length > 0) return parsed;
+
+  const fallbackBullets = sanitizeReflectionSliceLines(
+    parseSectionBullets(reflectionText, "Learning governance candidates (.learnings / promotion / skill extraction)")
+  );
+  if (fallbackBullets.length === 0) return [];
+
+  return [{
+    priority: "medium",
+    status: "pending",
+    area: "config",
+    summary: "Reflection learning governance candidates",
+    details: fallbackBullets.map((line) => `- ${line}`).join("\n"),
+    suggestedAction: "Review the governance candidates, promote durable rules to AGENTS.md / SOUL.md / TOOLS.md when stable, and extract a skill if the pattern becomes reusable.",
+  }];
+}
+
+function parseReflectionGovernanceEntry(block: string): ReflectionGovernanceEntry | null {
+  const body = block.replace(/^###\s+Entry\b[^\n]*\n?/i, "").trim();
+  if (!body) return null;
+
+  const readField = (label: string): string | undefined => {
+    const match = body.match(new RegExp(`^\\*\\*${label}\\*\\*:\\s*(.+)$`, "im"));
+    const value = match?.[1]?.trim();
+    return value ? value : undefined;
+  };
+
+  const readSection = (label: string): string | undefined => {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = body.match(new RegExp(`^###\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=^###\\s+|$)`, "im"));
+    const value = match?.[1]?.trim();
+    return value ? value : undefined;
+  };
+
+  const summary = readSection("Summary");
+  if (!summary) return null;
+
+  return {
+    priority: readField("Priority"),
+    status: readField("Status"),
+    area: readField("Area"),
+    summary,
+    details: readSection("Details"),
+    suggestedAction: readSection("Suggested Action"),
+  };
+}
+
 export function extractReflectionMappedMemories(reflectionText: string): ReflectionMappedMemory[] {
   const mappedSections: Array<{ heading: string; category: "preference" | "fact" | "decision" }> = [
     { heading: "User model deltas (about the human)", category: "preference" },
     { heading: "Agent model deltas (about the assistant/system)", category: "preference" },
-    { heading: "Learning governance candidates (.learnings / promotion / skill extraction)", category: "fact" },
+    { heading: "Lessons & pitfalls (symptom / cause / fix / prevention)", category: "fact" },
     { heading: "Decisions (durable)", category: "decision" },
   ];
 

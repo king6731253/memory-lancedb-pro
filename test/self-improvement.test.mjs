@@ -19,7 +19,11 @@ const {
   registerSelfImprovementExtractSkillTool,
 } = jiti("../src/tools.ts");
 const { appendSelfImprovementEntry } = jiti("../src/self-improvement-files.ts");
-const { extractReflectionLessons, extractReflectionMappedMemories } = jiti("../src/reflection-slices.ts");
+const {
+  extractReflectionLearningGovernanceCandidates,
+  extractReflectionLessons,
+  extractReflectionMappedMemories,
+} = jiti("../src/reflection-slices.ts");
 
 function createToolHarness(workspaceDir) {
   const factories = new Map();
@@ -76,6 +80,9 @@ describe("self-improvement", () => {
         "## Agent model deltas (about the assistant/system)",
         "- Should label empty-state status as triage before calling it a failure.",
         "",
+        "## Lessons & pitfalls (symptom / cause / fix / prevention)",
+        "- Symptom: empty-state status looked like a failure. Cause: no explicit triage label. Fix: classify empty-state as triage first. Prevention: avoid calling it breakage without reproduction.",
+        "",
         "## Learning governance candidates (.learnings / promotion / skill extraction)",
         "- LRN candidate: require file evidence before saying a skill was updated.",
       ].join("\n");
@@ -92,9 +99,9 @@ describe("self-improvement", () => {
           heading: "Agent model deltas (about the assistant/system)",
         },
         {
-          text: "LRN candidate: require file evidence before saying a skill was updated.",
+          text: "Symptom: empty-state status looked like a failure. Cause: no explicit triage label. Fix: classify empty-state as triage first. Prevention: avoid calling it breakage without reproduction.",
           category: "fact",
-          heading: "Learning governance candidates (.learnings / promotion / skill extraction)",
+          heading: "Lessons & pitfalls (symptom / cause / fix / prevention)",
         },
         {
           text: "Always verify file evidence before reporting completion.",
@@ -104,7 +111,7 @@ describe("self-improvement", () => {
       ]);
     });
 
-    it("appends reflection lessons into LEARNINGS.md with structured entry ids", async () => {
+    it("parses structured learning governance candidates and appends them as separate entries", async () => {
       const reflectionText = [
         "## Context (session background)",
         "- (none captured)",
@@ -112,29 +119,87 @@ describe("self-improvement", () => {
         "## Lessons & pitfalls (symptom / cause / fix / prevention)",
         "- Symptom: empty-state status looked like a failure. Cause: no explicit triage label. Fix: classify empty-state as triage first. Prevention: avoid calling it breakage without reproduction.",
         "- Symptom: reported done without file proof. Cause: conversation claim outran file verification. Fix: attach file evidence before declaring completion. Prevention: always verify real paths before reporting.",
+        "",
+        "## Learning governance candidates (.learnings / promotion / skill extraction)",
+        "### Entry 1",
+        "**Priority**: high",
+        "**Status**: triage",
+        "**Area**: docs",
+        "### Summary",
+        "Require file evidence before saying a skill was updated.",
+        "### Details",
+        "Conversation claims about implementation state outran file verification.",
+        "### Suggested Action",
+        "Attach concrete file paths and line references in the first completion report.",
+        "",
+        "### Entry 2",
+        "**Priority**: medium",
+        "**Status**: pending",
+        "**Area**: config",
+        "### Summary",
+        "Document the triage-first rule after it repeats.",
+        "### Details",
+        "Promote the rule into AGENTS.md once it is stable.",
+        "### Suggested Action",
+        "Add the concise rule to AGENTS.md when the pattern repeats again.",
       ].join("\n");
       const lessons = extractReflectionLessons(reflectionText);
       assert.deepEqual(lessons, [
         "Symptom: empty-state status looked like a failure. Cause: no explicit triage label. Fix: classify empty-state as triage first. Prevention: avoid calling it breakage without reproduction.",
         "Symptom: reported done without file proof. Cause: conversation claim outran file verification. Fix: attach file evidence before declaring completion. Prevention: always verify real paths before reporting.",
       ]);
+      const governanceCandidates = extractReflectionLearningGovernanceCandidates(reflectionText);
+      assert.deepEqual(governanceCandidates, [
+        {
+          priority: "high",
+          status: "triage",
+          area: "docs",
+          summary: "Require file evidence before saying a skill was updated.",
+          details: "Conversation claims about implementation state outran file verification.",
+          suggestedAction: "Attach concrete file paths and line references in the first completion report.",
+        },
+        {
+          priority: "medium",
+          status: "pending",
+          area: "config",
+          summary: "Document the triage-first rule after it repeats.",
+          details: "Promote the rule into AGENTS.md once it is stable.",
+          suggestedAction: "Add the concise rule to AGENTS.md when the pattern repeats again.",
+        },
+      ]);
 
-      const appended = await appendSelfImprovementEntry({
+      const appendedOne = await appendSelfImprovementEntry({
         baseDir: workspaceDir,
         type: "learning",
-        summary: "Reflection lessons & pitfalls from command:reset",
-        details: lessons.map((line) => `- ${line}`).join("\n"),
-        suggestedAction: "Review and promote stable rules when they recur.",
+        summary: governanceCandidates[0].summary,
+        details: governanceCandidates[0].details,
+        suggestedAction: governanceCandidates[0].suggestedAction,
+        area: governanceCandidates[0].area,
+        priority: governanceCandidates[0].priority,
+        status: governanceCandidates[0].status,
+        source: "memory-lancedb-pro/reflection:test",
+      });
+      const appendedTwo = await appendSelfImprovementEntry({
+        baseDir: workspaceDir,
+        type: "learning",
+        summary: governanceCandidates[1].summary,
+        details: governanceCandidates[1].details,
+        suggestedAction: governanceCandidates[1].suggestedAction,
+        area: governanceCandidates[1].area,
+        priority: governanceCandidates[1].priority,
+        status: governanceCandidates[1].status,
         source: "memory-lancedb-pro/reflection:test",
       });
 
-      assert.match(appended.id, /^LRN-\d{8}-001$/);
+      assert.match(appendedOne.id, /^LRN-\d{8}-001$/);
+      assert.match(appendedTwo.id, /^LRN-\d{8}-002$/);
       const learningsPath = path.join(workspaceDir, ".learnings", "LEARNINGS.md");
       const learningsBody = readFileSync(learningsPath, "utf-8");
-      assert.match(learningsBody, /## \[LRN-\d{8}-001\] best_practice/);
-      assert.match(learningsBody, /Reflection lessons & pitfalls from command:reset/);
-      assert.match(learningsBody, /empty-state status looked like a failure/);
-      assert.match(learningsBody, /attach file evidence before declaring completion/);
+      assert.match(learningsBody, /Require file evidence before saying a skill was updated/);
+      assert.match(learningsBody, /\*\*Priority\*\*: high/);
+      assert.match(learningsBody, /\*\*Status\*\*: triage/);
+      assert.match(learningsBody, /Document the triage-first rule after it repeats/);
+      assert.match(learningsBody, /\*\*Status\*\*: pending/);
       assert.match(learningsBody, /Source: memory-lancedb-pro\/reflection:test/);
     });
 

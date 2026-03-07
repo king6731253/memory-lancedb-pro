@@ -168,8 +168,8 @@ Query → BM25 FTS ─────┘
   - 它与 `memoryReflection` 是分开的：看到 self-improvement note 或 `.learnings/*` 写入，并不等于 reflection 存储已经开启。
   - 治理类 extract/review 动作仍然是显式工具触发，不是后台自动触发。
 - 工具：
-  - `self_improvement_log`：写入结构化 LRN/ERR/FEAT 条目
-  - Reflection 自动提升：当 reflection 落盘且 `## Lessons & pitfalls (symptom / cause / fix / prevention)` 含有非占位 bullet 时，插件会额外向 `.learnings/LEARNINGS.md` 追加一条结构化 `learning` 记录，并把 reflection 文件路径记为来源。
+  - `self_improvement_log`：写入结构化 LRN/ERR 条目
+  - Reflection 自动提升：当 reflection 落盘且 `## Learning governance candidates (.learnings / promotion / skill extraction)` 含有结构化治理条目时，插件会逐条解析并分别追加到 `.learnings/LEARNINGS.md` 中，作为独立的结构化 `learning` 记录；`Logged` 时间戳和条目 id 由写入器生成，不依赖 reflection 文本提供。
   - `self_improvement_review`：汇总治理 backlog（pending/high/promoted）
   - `self_improvement_extract_skill`：从学习条目提炼可复用 `SKILL.md` 脚手架
     - 触发者：由用户/模型显式调用工具触发（非后台自动触发）
@@ -209,7 +209,7 @@ Query → BM25 FTS ─────┘
     - `weight = 1 / (1 + exp(k * (ageDays - midpointDays)))`
     - 默认值：`midpointDays = 3`、`k = 1.2`
     - fallback 生成的 derive 记录使用更低基础权重（`deriveBaseWeight = 0.35`，普通 derive 为 `1.0`）
-  - 派生行提取关键词：`reflect|inherit|derive|change|apply`。
+  - 主路径优先使用显式 `## Derived` 段落并按 delta-like 规则过滤；仅兼容旧格式时才回退到 merged-section 关键词匹配。
 - 错误闭环：`after_tool_call` 捕获并去重工具错误签名，用于提醒与反思上下文
 
 ### 10. Markdown 镜像（`mdMirror`）

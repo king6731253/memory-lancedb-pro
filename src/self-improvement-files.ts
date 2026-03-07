@@ -79,6 +79,7 @@ export interface AppendSelfImprovementEntryParams {
   category?: string;
   area?: string;
   priority?: string;
+  status?: string;
   source?: string;
 }
 
@@ -95,6 +96,7 @@ export async function appendSelfImprovementEntry(params: AppendSelfImprovementEn
     category = "best_practice",
     area = "config",
     priority = "medium",
+    status = "pending",
     source = "memory-lancedb-pro/self_improvement_log",
   } = params;
 
@@ -113,7 +115,7 @@ export async function appendSelfImprovementEntry(params: AppendSelfImprovementEn
       "",
       `**Logged**: ${nowIso}`,
       `**Priority**: ${priority}`,
-      `**Status**: pending`,
+      `**Status**: ${status}`,
       `**Area**: ${area}`,
       "",
       "### Summary",

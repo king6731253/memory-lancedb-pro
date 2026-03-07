@@ -31,7 +31,10 @@ import {
   loadAgentReflectionSlicesFromEntries,
   DEFAULT_REFLECTION_DERIVED_MAX_AGE_MS,
 } from "./src/reflection-store.js";
-import { extractReflectionLessons, extractReflectionMappedMemories } from "./src/reflection-slices.js";
+import {
+  extractReflectionLearningGovernanceCandidates,
+  extractReflectionMappedMemories,
+} from "./src/reflection-slices.js";
 import { createMemoryCLI } from "./cli.js";
 
 // ============================================================================
@@ -714,12 +717,18 @@ function buildReflectionPrompt(
     "- Write derived bullets as concrete next-run adjustments, such as: This run showed ... / Next run ... / Re-check ... / Avoid repeating ...",
     "- Do NOT restate long-term rules in Derived.",
     "",
-    "For 'Learning governance candidates', prefer this structure:",
-    "- LRN candidate(s): correction / best_practice / knowledge_gap",
-    "- ERR candidate(s): reproducible failure signature + fix",
-    "- FEAT candidate(s): missing capability request",
-    "- Promotion candidates: AGENTS.md / SOUL.md / TOOLS.md concise rules",
-    "- Skill extraction candidate: name + why reusable + source learning id placeholder",
+    "For 'Learning governance candidates', write zero or more structured entries in this exact shape:",
+    "### Entry N",
+    "**Priority**: low|medium|high|critical",
+    "**Status**: pending|triage|promoted_to_skill|done",
+    "**Area**: frontend|backend|infra|tests|docs|config or custom area",
+    "### Summary",
+    "<one concise governance candidate>",
+    "### Details",
+    "<short supporting details, bullets allowed>",
+    "### Suggested Action",
+    "<concrete next action>",
+    "- Do NOT invent **Logged** timestamps or ids; the writer will add those.",
     "",
     "Recent tool error signals (PostToolUse-style detector):",
     errorHints,
@@ -749,7 +758,16 @@ function buildReflectionFallbackText(): string {
     "- (none captured)",
     "",
     "## Learning governance candidates (.learnings / promotion / skill extraction)",
-    "- ERR candidate: investigate last failed tool execution and log to .learnings/ERRORS.md",
+    "### Entry 1",
+    "**Priority**: medium",
+    "**Status**: triage",
+    "**Area**: config",
+    "### Summary",
+    "Investigate last failed tool execution and decide whether it belongs in .learnings/ERRORS.md.",
+    "### Details",
+    "The reflection pipeline fell back; confirm the failure is reproducible before treating it as a durable error record.",
+    "### Suggested Action",
+    "Reproduce the latest failed tool execution, classify it as triage or error, and then log it with the appropriate tool/file path evidence.",
     "",
     "## Open loops / next actions",
     "- Investigate why embedded reflection generation failed.",
@@ -1937,19 +1955,22 @@ const memoryLanceDBProPlugin = {
             throw new Error(`Failed to allocate unique reflection file for ${dateStr} ${timeCompact}`);
           }
 
-          const reflectionLessons = extractReflectionLessons(reflectionText);
-          if (config.selfImprovement?.enabled !== false && reflectionLessons.length > 0) {
-            await appendSelfImprovementEntry({
-              baseDir: workspaceDir,
-              type: "learning",
-              summary: `Reflection lessons & pitfalls from ${String(event.action || "unknown")}`,
-              details: reflectionLessons.map((line) => `- ${line}`).join("\n"),
-              suggestedAction: "Review the reflection lessons, promote durable rules to AGENTS.md / SOUL.md / TOOLS.md when stable, and extract a skill if the pattern becomes reusable.",
-              category: "best_practice",
-              area: "config",
-              priority: "medium",
-              source: `memory-lancedb-pro/reflection:${relPath}`,
-            });
+          const reflectionGovernanceCandidates = extractReflectionLearningGovernanceCandidates(reflectionText);
+          if (config.selfImprovement?.enabled !== false && reflectionGovernanceCandidates.length > 0) {
+            for (const candidate of reflectionGovernanceCandidates) {
+              await appendSelfImprovementEntry({
+                baseDir: workspaceDir,
+                type: "learning",
+                summary: candidate.summary,
+                details: candidate.details,
+                suggestedAction: candidate.suggestedAction,
+                category: "best_practice",
+                area: candidate.area || "config",
+                priority: candidate.priority || "medium",
+                status: candidate.status || "pending",
+                source: `memory-lancedb-pro/reflection:${relPath}`,
+              });
+            }
           }
 
           const mappedReflectionMemories = extractReflectionMappedMemories(reflectionText);
