@@ -114,9 +114,9 @@ describe("retriever trace and telemetry", () => {
       limit: 5,
     });
 
-    // Should fall back to vector-only, NOT call bm25Search
-    assert.equal(bm25Called, false, "bm25Search should not be called when canUseFts=false");
-    assert.equal(execution.trace.mode, "hybrid-fallback-vector");
+    // With upstream cold-start fix, hybrid mode always enters hybridRetrieval
+    // which handles FTS unavailability gracefully inside. trace.mode reports "hybrid".
+    assert.equal(execution.trace.mode, "hybrid");
     assert.ok(execution.results.length >= 0);
   });
 });
