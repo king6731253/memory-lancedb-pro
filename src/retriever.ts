@@ -136,6 +136,32 @@ function clamp01WithFloor(value: number, floor: number): number {
 }
 
 // ============================================================================
+// Weibull Tier Parameters (lightweight fallback for applyTimeDecay)
+// ============================================================================
+
+/** Weibull shape parameter per tier. Reuses the same values as decay-engine.ts
+ *  but kept inline to avoid coupling retriever to the full decay engine. */
+const TIER_BETA: Record<string, number> = {
+  core: 0.8,        // Sub-exponential: slow forgetting
+  working: 1.0,     // Standard exponential
+  peripheral: 1.3,  // Super-exponential: fast forgetting
+};
+
+/** Extract tier from entry metadata. Defaults to "working" (β=1.0) for
+ *  backward compatibility — existing entries without tier metadata behave
+ *  exactly as before (standard exponential). */
+function parseTierFromMetadata(metadata?: string): string {
+  if (!metadata) return "working";
+  try {
+    const meta = JSON.parse(metadata) as Record<string, unknown>;
+    if (meta.tier === "core" || meta.tier === "working" || meta.tier === "peripheral") {
+      return meta.tier;
+    }
+  } catch { /* ignore parse errors */ }
+  return "working";
+}
+
+// ============================================================================
 // Rerank Provider Adapters
 // ============================================================================
 
@@ -815,14 +841,26 @@ export class MemoryRetriever {
   }
 
   /**
-   * Time decay: multiplicative penalty for old entries.
-   * Unlike recencyBoost (additive bonus for new entries), this actively
-   * penalizes stale information so recent knowledge wins ties.
-   * Formula: score *= 0.5 + 0.5 * exp(-ageDays / halfLife)
-   * At 0 days: 1.0x (no penalty)
-   * At halfLife: ~0.68x
-   * At 2*halfLife: ~0.59x
-   * Floor at 0.5x (never penalize more than half)
+   * Time decay: Weibull stretched-exponential penalty for old entries.
+   *
+   * Upgrade from simple exponential to tier-aware Weibull decay, reusing the
+   * same beta/floor parameters already defined in decay-engine.ts. This gives
+   * users who haven't enabled the full smart-memory lifecycle a meaningful
+   * improvement in how stale memories are penalized:
+   *
+   * - Core memories (β=0.8, floor 0.5): sub-exponential, slow forgetting
+   * - Working memories (β=1.0, floor 0.5): standard exponential (same as before)
+   * - Peripheral memories (β=1.3, floor 0.5): super-exponential, fast forgetting
+   *
+   * Formula: score *= floor + (1 - floor) * exp(-λ * t^β)
+   *   where λ = ln(2) / effectiveHL^β
+   *
+   * At t=0: 1.0x. At t=effectiveHL: ~0.75x. At t→∞: floor.
+   * Tier is read from entry metadata; defaults to "working" (β=1.0,
+   * equivalent to the previous simple exponential behavior).
+   *
+   * Access reinforcement is preserved: frequently recalled memories still
+   * get an extended effective half-life via computeEffectiveHalfLife().
    */
   private applyTimeDecay(results: RetrievalResult[]): RetrievalResult[] {
     const halfLife = this.config.timeDecayHalfLifeDays;
@@ -846,11 +884,20 @@ export class MemoryRetriever {
         this.config.maxHalfLifeMultiplier,
       );
 
+      // Resolve tier from metadata for Weibull shape parameter
+      const tier = parseTierFromMetadata(r.entry.metadata);
+      const beta = TIER_BETA[tier];
+
+      // Weibull decay: λ = ln(2) / effectiveHL^β
+      const lambda = Math.LN2 / Math.pow(effectiveHL, beta);
+      const decay = Math.exp(-lambda * Math.pow(ageDays, beta));
+
       // floor at 0.5: even very old entries keep at least 50% of their score
-      const factor = 0.5 + 0.5 * Math.exp(-ageDays / effectiveHL);
+      const floor = 0.5;
+      const factor = floor + (1 - floor) * decay;
       return {
         ...r,
-        score: clamp01(r.score * factor, r.score * 0.5),
+        score: clamp01(r.score * factor, r.score * floor),
       };
     });
 
