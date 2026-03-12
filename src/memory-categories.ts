@@ -57,6 +57,7 @@ export type ExtractionStats = {
   created: number;
   merged: number;
   skipped: number;
+  rejected?: number; // admission-control rejections before persistence
   supported?: number; // context-aware support count
 };
 

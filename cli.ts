@@ -4,6 +4,13 @@
 
 import type { Command } from "commander";
 import { readFileSync } from "node:fs";
+import type { AdmissionControlConfig, AdmissionRejectionAuditEntry } from "./src/admission-control.js";
+import { resolveRejectedAuditFilePath } from "./src/admission-control.js";
+import {
+  buildAdmissionStats,
+  readAdmissionRejectionAudits,
+  summarizeAdmissionRejections,
+} from "./src/admission-stats.js";
 import { loadLanceDB, type MemoryEntry, type MemoryStore } from "./src/store.js";
 import { createRetriever, type MemoryRetriever } from "./src/retriever.js";
 import type { MemoryScopeManager } from "./src/scopes.js";
@@ -22,6 +29,7 @@ interface CLIContext {
   migrator: MemoryMigrator;
   embedder?: import("./src/embedder.js").Embedder;
   llmClient?: LlmClient;
+  admissionControl?: AdmissionControlConfig;
 }
 
 // ============================================================================
@@ -54,6 +62,65 @@ function formatMemory(memory: any, index?: number): string {
 
 function formatJson(obj: any): string {
   return JSON.stringify(obj, null, 2);
+}
+
+function parseSinceToTimestamp(raw: string, now = Date.now()): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const relative = /^(\d+)([mhdw])$/i.exec(trimmed);
+  if (relative) {
+    const value = Number(relative[1]);
+    const unit = relative[2].toLowerCase();
+    const unitMs =
+      unit === "m" ? 60_000 :
+      unit === "h" ? 3_600_000 :
+      unit === "d" ? 86_400_000 :
+      7 * 86_400_000;
+    return now - (value * unitMs);
+  }
+
+  const parsed = Date.parse(trimmed);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
+function filterAdmissionRejectionEntries(
+  entries: AdmissionRejectionAuditEntry[],
+  options: {
+    scope?: string;
+    category?: string;
+    since?: string;
+    reasonContains?: string;
+  },
+): AdmissionRejectionAuditEntry[] {
+  let filtered = entries;
+
+  if (options.scope) {
+    filtered = filtered.filter((entry) => entry.target_scope === options.scope);
+  }
+  if (options.category) {
+    filtered = filtered.filter((entry) => entry.candidate.category === options.category);
+  }
+  if (options.since) {
+    const sinceTs = parseSinceToTimestamp(options.since);
+    if (sinceTs === null) {
+      throw new Error(`Invalid --since value: ${options.since}`);
+    }
+    filtered = filtered.filter((entry) => entry.rejected_at >= sinceTs);
+  }
+  if (options.reasonContains) {
+    const needle = options.reasonContains.toLowerCase();
+    filtered = filtered.filter((entry) => {
+      const reason = entry.audit.reason.toLowerCase();
+      const utilityReason = (entry.audit.utility_reason || "").toLowerCase();
+      return reason.includes(needle) || utilityReason.includes(needle);
+    });
+  }
+
+  return filtered;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -217,6 +284,12 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         const stats = await context.store.stats(scopeFilter);
         const scopeStats = context.scopeManager.getStats();
         const retrievalConfig = context.retriever.getConfig();
+        const admission = await buildAdmissionStats({
+          store: context.store,
+          admissionControl: context.admissionControl,
+          scopeFilter,
+          memoryTotalCount: stats.totalCount,
+        });
 
         const summary = {
           memory: stats,
@@ -225,6 +298,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
             mode: retrievalConfig.mode,
             hasFtsSupport: context.store.hasFtsSupport,
           },
+          admission,
         };
 
         if (options.json) {
@@ -235,6 +309,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           console.log(`• Available scopes: ${scopeStats.totalScopes}`);
           console.log(`• Retrieval mode: ${retrievalConfig.mode}`);
           console.log(`• FTS support: ${context.store.hasFtsSupport ? 'Yes' : 'No'}`);
+          console.log(`• Admission control: ${admission.enabled ? "enabled" : "disabled"}`);
           console.log();
 
           console.log("Memories by scope:");
@@ -247,9 +322,147 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           Object.entries(stats.categoryCounts).forEach(([category, count]) => {
             console.log(`  • ${category}: ${count}`);
           });
+
+          if (admission.enabled) {
+            console.log();
+            console.log("Admission summary:");
+            console.log(`  • Reject audit file: ${admission.rejectedAuditFilePath}`);
+            console.log(`  • Rejected candidates: ${admission.rejectedCount}`);
+            if (admission.admittedCount !== null) {
+              console.log(`  • Admitted memories (audited): ${admission.admittedCount}`);
+              console.log(`  • Total observed decisions: ${admission.totalObserved}`);
+              console.log(
+                `  • Reject rate: ${admission.rejectRate !== null ? `${(admission.rejectRate * 100).toFixed(1)}%` : "n/a"}`,
+              );
+            } else {
+              console.log("  • Admitted memories (audited): unavailable (admissionControl.auditMetadata=false)");
+            }
+            console.log(
+              `  • Latest rejection: ${admission.latestRejectedAt ? new Date(admission.latestRejectedAt).toISOString() : "none"}`,
+            );
+            if (admission.topReasons.length > 0) {
+              console.log("  • Top rejection reasons:");
+              admission.topReasons.forEach((item) => {
+                console.log(`    - ${item.label}: ${item.count}`);
+              });
+            }
+            console.log("  • Recent windows:");
+            console.log(
+              `    - last24h: admitted=${admission.windows.last24h.admittedCount ?? "n/a"}, rejected=${admission.windows.last24h.rejectedCount}, rejectRate=${admission.windows.last24h.rejectRate !== null ? `${(admission.windows.last24h.rejectRate * 100).toFixed(1)}%` : "n/a"}`,
+            );
+            console.log(
+              `    - last7d: admitted=${admission.windows.last7d.admittedCount ?? "n/a"}, rejected=${admission.windows.last7d.rejectedCount}, rejectRate=${admission.windows.last7d.rejectRate !== null ? `${(admission.windows.last7d.rejectRate * 100).toFixed(1)}%` : "n/a"}`,
+            );
+            const categoryRows = Object.entries(admission.categoryBreakdown);
+            if (categoryRows.length > 0) {
+              console.log("  • Observed by category:");
+              categoryRows.forEach(([category, item]) => {
+                console.log(
+                  `    - ${category}: admitted=${item.admittedCount ?? "n/a"}, rejected=${item.rejectedCount}, rejectRate=${item.rejectRate !== null ? `${(item.rejectRate * 100).toFixed(1)}%` : "n/a"}`,
+                );
+              });
+            }
+          }
         }
       } catch (error) {
         console.error("Failed to get statistics:", error);
+        process.exit(1);
+      }
+    });
+
+  memory
+    .command("admission-rejections")
+    .description("Inspect persisted admission reject audit records")
+    .option("--file <path>", "Explicit JSONL audit file path")
+    .option("--scope <scope>", "Filter by target scope")
+    .option("--category <category>", "Filter by candidate category")
+    .option("--since <value>", "Filter by rejection time (ISO date/time or relative like 30m, 12h, 7d, 2w)")
+    .option("--reason-contains <text>", "Filter by audit reason or utility reason substring")
+    .option("--limit <n>", "Maximum number of newest records to show", "20")
+    .option("--tail <n>", "Alias for --limit; show newest N records")
+    .option("--stats", "Show summary stats instead of individual records")
+    .option("--json", "Output as JSON")
+    .action(async (options) => {
+      try {
+        const filePath = options.file
+          ? String(options.file)
+          : resolveRejectedAuditFilePath(context.store.dbPath, context.admissionControl);
+
+        const tailRaw = options.tail ?? options.limit;
+        const limit = clampInt(parseInt(tailRaw) || 20, 1, 500);
+        const entries = filterAdmissionRejectionEntries(
+          await readAdmissionRejectionAudits(filePath),
+          {
+            scope: options.scope,
+            category: options.category,
+            since: options.since,
+            reasonContains: options.reasonContains,
+          },
+        );
+
+        const newestFirst = entries
+          .slice()
+          .sort((left, right) => right.rejected_at - left.rejected_at);
+
+        if (options.stats) {
+          const summary = {
+            filePath,
+            ...summarizeAdmissionRejections(newestFirst),
+          };
+          if (options.json) {
+            console.log(formatJson(summary));
+          } else {
+            console.log("Admission Rejection Audit:");
+            console.log(`• File: ${filePath}`);
+            console.log(`• Total rejections: ${summary.total}`);
+            console.log(`• Latest rejection: ${summary.latestRejectedAt ? new Date(summary.latestRejectedAt).toISOString() : "none"}`);
+            console.log();
+            console.log("Rejections by category:");
+            Object.entries(summary.byCategory).forEach(([category, count]) => {
+              console.log(`  • ${category}: ${count}`);
+            });
+            console.log();
+            console.log("Rejections by scope:");
+            Object.entries(summary.byScope).forEach(([scope, count]) => {
+              console.log(`  • ${scope}: ${count}`);
+            });
+            if (summary.topReasons.length > 0) {
+              console.log();
+              console.log("Top rejection reasons:");
+              summary.topReasons.forEach((item) => {
+                console.log(`  • ${item.label}: ${item.count}`);
+              });
+            }
+          }
+          return;
+        }
+
+        const rows = newestFirst.slice(0, limit);
+        if (options.json) {
+          console.log(formatJson({
+            filePath,
+            count: rows.length,
+            entries: rows,
+          }));
+          return;
+        }
+
+        if (rows.length === 0) {
+          console.log(`No admission rejection audits found at ${filePath}`);
+          return;
+        }
+
+        console.log(`Showing ${rows.length} admission rejection audit record(s) from ${filePath}:\n`);
+        rows.forEach((entry, index) => {
+          console.log(
+            `${index + 1}. [${entry.candidate.category}:${entry.target_scope}] ${entry.candidate.abstract} ` +
+            `(score=${entry.audit.score.toFixed(3)}, at=${new Date(entry.rejected_at).toISOString()})`,
+          );
+          console.log(`   reason: ${entry.audit.reason}`);
+          console.log(`   session: ${entry.session_key}`);
+        });
+      } catch (error) {
+        console.error("Failed to read admission rejection audits:", error);
         process.exit(1);
       }
     });

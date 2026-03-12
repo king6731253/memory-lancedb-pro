@@ -56,7 +56,7 @@ function createMockApi(pluginConfig, options = {}) {
   };
 }
 
-for (const key of ["smartExtraction", "extractMinMessages", "extractMaxChars"]) {
+for (const key of ["smartExtraction", "extractMinMessages", "extractMaxChars", "admissionControl"]) {
   assert.ok(
     Object.prototype.hasOwnProperty.call(manifest.configSchema.properties, key),
     `configSchema should declare ${key}`,
@@ -77,6 +77,21 @@ assert.equal(
   manifest.configSchema.properties.sessionMemory.properties.enabled.default,
   false,
   "sessionMemory.enabled schema default should match runtime default",
+);
+assert.equal(
+  manifest.configSchema.properties.admissionControl.properties.preset.default,
+  "balanced",
+  "admissionControl.preset schema default should match runtime default",
+);
+assert.equal(
+  manifest.configSchema.properties.admissionControl.properties.enabled.default,
+  false,
+  "admissionControl.enabled schema default should match runtime default",
+);
+assert.equal(
+  manifest.configSchema.properties.admissionControl.properties.persistRejectedAudits.default,
+  true,
+  "admissionControl.persistRejectedAudits schema default should match runtime default",
 );
 
 assert.equal(

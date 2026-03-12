@@ -43,6 +43,12 @@ import { isNoise } from "./src/noise-filter.js";
 import { SmartExtractor } from "./src/smart-extractor.js";
 import { NoisePrototypeBank } from "./src/noise-prototypes.js";
 import { createLlmClient } from "./src/llm-client.js";
+import {
+  normalizeAdmissionControlConfig,
+  resolveRejectedAuditFilePath,
+  type AdmissionControlConfig,
+  type AdmissionRejectionAuditEntry,
+} from "./src/admission-control.js";
 import { createDecayEngine, DEFAULT_DECAY_CONFIG } from "./src/decay-engine.js";
 import { createTierManager, DEFAULT_TIER_CONFIG } from "./src/tier-manager.js";
 import { createMemoryUpgrader } from "./src/memory-upgrader.js";
@@ -128,6 +134,7 @@ interface PluginConfig {
   };
   extractMinMessages?: number;
   extractMaxChars?: number;
+  admissionControl?: AdmissionControlConfig;
   scopes?: {
     default?: string;
     definitions?: Record<string, { description: string }>;
@@ -1552,6 +1559,32 @@ function createMdMirrorWriter(
   };
 }
 
+function createAdmissionRejectionAuditWriter(
+  api: OpenClawPluginApi,
+  resolvedDbPath: string,
+  config: PluginConfig,
+): ((entry: AdmissionRejectionAuditEntry) => Promise<void>) | null {
+  if (
+    config.admissionControl?.enabled !== true ||
+    config.admissionControl.persistRejectedAudits !== true
+  ) {
+    return null;
+  }
+
+  const filePath = api.resolvePath(
+    resolveRejectedAuditFilePath(resolvedDbPath, config.admissionControl),
+  );
+
+  return async (entry: AdmissionRejectionAuditEntry) => {
+    try {
+      await mkdir(dirname(filePath), { recursive: true });
+      await appendFile(filePath, `${JSON.stringify(entry)}\n`, "utf8");
+    } catch (err) {
+      api.logger.warn(`memory-lancedb-pro: admission rejection audit write failed: ${String(err)}`);
+    }
+  };
+}
+
 // ============================================================================
 // Version
 // ============================================================================
@@ -1664,11 +1697,18 @@ const memoryLanceDBProPlugin = {
         noiseBank.init(embedder).catch((err) =>
           api.logger.debug(`memory-lancedb-pro: noise bank init: ${String(err)}`),
         );
+        const admissionRejectionAuditWriter = createAdmissionRejectionAuditWriter(
+          api,
+          resolvedDbPath,
+          config,
+        );
 
         smartExtractor = new SmartExtractor(store, embedder, llmClient, {
           user: "User",
           extractMinMessages: config.extractMinMessages ?? 2,
           extractMaxChars: config.extractMaxChars ?? 8000,
+          admissionControl: config.admissionControl,
+          onAdmissionRejected: admissionRejectionAuditWriter ?? undefined,
           defaultScope: config.scopes?.default ?? "global",
           log: (msg: string) => api.logger.info(msg),
           debugLog: (msg: string) => api.logger.debug(msg),
@@ -1936,6 +1976,7 @@ const memoryLanceDBProPlugin = {
         store,
         scopeManager,
         embedder,
+        admissionControl: config.admissionControl,
         agentId: undefined, // Will be determined at runtime from context
         workspaceDir: getDefaultWorkspaceDir(),
         mdMirror,
@@ -1973,6 +2014,7 @@ const memoryLanceDBProPlugin = {
             });
           } catch { return undefined; }
         })() : undefined,
+        admissionControl: config.admissionControl,
       }),
       { commands: ["memory-pro"] },
     );
@@ -2237,15 +2279,15 @@ const memoryLanceDBProPlugin = {
                 conversationText, sessionKey,
                 { scope: defaultScope, scopeFilter: accessibleScopes },
               );
-              if (stats.created > 0 || stats.merged > 0) {
+              if (stats.created > 0 || stats.merged > 0 || (stats.rejected ?? 0) > 0) {
                 api.logger.info(
-                  `memory-lancedb-pro: smart-extracted ${stats.created} created, ${stats.merged} merged, ${stats.skipped} skipped for agent ${agentId}`
+                  `memory-lancedb-pro: smart-extracted ${stats.created} created, ${stats.merged} merged, ${stats.skipped} skipped, ${stats.rejected ?? 0} rejected for agent ${agentId}`
                 );
                 return; // Smart extraction handled everything
               }
 
               api.logger.info(
-                `memory-lancedb-pro: smart extraction produced no persisted memories for agent ${agentId} (created=${stats.created}, merged=${stats.merged}, skipped=${stats.skipped}); falling back to regex capture`,
+                `memory-lancedb-pro: smart extraction produced no persisted memories for agent ${agentId} (created=${stats.created}, merged=${stats.merged}, skipped=${stats.skipped}, rejected=${stats.rejected ?? 0}); falling back to regex capture`,
               );
             } else {
               api.logger.debug(
@@ -3259,6 +3301,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     llm: typeof cfg.llm === "object" && cfg.llm !== null ? cfg.llm as any : undefined,
     extractMinMessages: parsePositiveInt(cfg.extractMinMessages) ?? 2,
     extractMaxChars: parsePositiveInt(cfg.extractMaxChars) ?? 8000,
+    admissionControl: normalizeAdmissionControlConfig(cfg.admissionControl),
     scopes: typeof cfg.scopes === "object" && cfg.scopes !== null ? cfg.scopes as any : undefined,
     enableManagementTools: cfg.enableManagementTools === true,
     sessionStrategy,

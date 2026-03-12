@@ -8,6 +8,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { AdmissionControlConfig } from "./admission-control.js";
+import { buildAdmissionStats } from "./admission-stats.js";
 import type { MemoryRetriever, RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
 import { isNoise } from "./noise-filter.js";
@@ -53,6 +55,7 @@ interface ToolContext {
   agentId?: string;
   workspaceDir?: string;
   mdMirror?: MdMirrorWriter | null;
+  admissionControl?: AdmissionControlConfig;
 }
 
 function resolveAgentId(runtimeAgentId: unknown, fallback?: string): string | undefined {
@@ -1069,6 +1072,12 @@ export function registerMemoryStatsTool(
           const stats = await context.store.stats(scopeFilter);
           const scopeManagerStats = context.scopeManager.getStats();
           const retrievalConfig = context.retriever.getConfig();
+          const admission = await buildAdmissionStats({
+            store: context.store,
+            admissionControl: context.admissionControl,
+            scopeFilter,
+            memoryTotalCount: stats.totalCount,
+          });
 
           const text = [
             `Memory Statistics:`,
@@ -1076,6 +1085,7 @@ export function registerMemoryStatsTool(
             `• Available scopes: ${scopeManagerStats.totalScopes}`,
             `• Retrieval mode: ${retrievalConfig.mode}`,
             `• FTS support: ${context.store.hasFtsSupport ? "Yes" : "No"}`,
+            `• Admission control: ${admission.enabled ? "enabled" : "disabled"}`,
             ``,
             `Memories by scope:`,
             ...Object.entries(stats.scopeCounts).map(
@@ -1086,12 +1096,49 @@ export function registerMemoryStatsTool(
             ...Object.entries(stats.categoryCounts).map(
               ([c, count]) => `  • ${c}: ${count}`,
             ),
+            ...(admission.enabled
+              ? [
+                ``,
+                `Admission summary:`,
+                `  • Reject audit file: ${admission.rejectedAuditFilePath}`,
+                `  • Rejected candidates: ${admission.rejectedCount}`,
+                ...(admission.admittedCount !== null
+                  ? [
+                    `  • Admitted memories (audited): ${admission.admittedCount}`,
+                    `  • Total observed decisions: ${admission.totalObserved}`,
+                    `  • Reject rate: ${admission.rejectRate !== null ? `${(admission.rejectRate * 100).toFixed(1)}%` : "n/a"}`,
+                  ]
+                  : [
+                    `  • Admitted memories (audited): unavailable (admissionControl.auditMetadata=false)`,
+                  ]),
+                `  • Latest rejection: ${admission.latestRejectedAt ? new Date(admission.latestRejectedAt).toISOString() : "none"}`,
+                ...(admission.topReasons.length > 0
+                  ? [
+                    `  • Top rejection reasons:`,
+                    ...admission.topReasons.map((item) => `    - ${item.label}: ${item.count}`),
+                  ]
+                  : []),
+                `  • Recent windows:`,
+                `    - last24h: admitted=${admission.windows.last24h.admittedCount ?? "n/a"}, rejected=${admission.windows.last24h.rejectedCount}, rejectRate=${admission.windows.last24h.rejectRate !== null ? `${(admission.windows.last24h.rejectRate * 100).toFixed(1)}%` : "n/a"}`,
+                `    - last7d: admitted=${admission.windows.last7d.admittedCount ?? "n/a"}, rejected=${admission.windows.last7d.rejectedCount}, rejectRate=${admission.windows.last7d.rejectRate !== null ? `${(admission.windows.last7d.rejectRate * 100).toFixed(1)}%` : "n/a"}`,
+                ...(Object.keys(admission.categoryBreakdown).length > 0
+                  ? [
+                    `  • Observed by category:`,
+                    ...Object.entries(admission.categoryBreakdown).map(
+                      ([category, item]) =>
+                        `    - ${category}: admitted=${item.admittedCount ?? "n/a"}, rejected=${item.rejectedCount}, rejectRate=${item.rejectRate !== null ? `${(item.rejectRate * 100).toFixed(1)}%` : "n/a"}`,
+                    ),
+                  ]
+                  : []),
+              ]
+              : []),
           ].join("\n");
 
           return {
             content: [{ type: "text", text }],
             details: {
               stats,
+              admission,
               scopeManagerStats,
               retrievalConfig: {
                 ...retrievalConfig,
