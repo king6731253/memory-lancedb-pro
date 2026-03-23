@@ -109,8 +109,29 @@
         "type": "integer",
         "minimum": 0,
         "maximum": 100,
-        "default": 0,
-        "description": "Minimum number of turns before the same memory can be recalled again in the same session. Set to 0 to disable deduplication (default behavior: inject all memories)."
+        "default": 8,
+        "description": "Minimum number of turns before the same memory can be recalled again in the same session. Set to 0 to disable deduplication."
+      },
+      "autoRecallMaxItems": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "default": 3,
+        "description": "Maximum number of memories auto-injected per turn."
+      },
+      "autoRecallMaxChars": {
+        "type": "integer",
+        "minimum": 64,
+        "maximum": 8000,
+        "default": 600,
+        "description": "Maximum total character budget for auto-injected memory summaries."
+      },
+      "autoRecallPerItemMaxChars": {
+        "type": "integer",
+        "minimum": 32,
+        "maximum": 1000,
+        "default": 180,
+        "description": "Maximum character budget per auto-injected memory summary."
       },
       "captureAssistant": {
         "type": "boolean"
@@ -124,7 +145,7 @@
         "type": "integer",
         "minimum": 1,
         "maximum": 100,
-        "default": 2,
+        "default": 4,
         "description": "Minimum conversation messages required before smart extraction runs."
       },
       "extractMaxChars": {
@@ -878,6 +899,21 @@
     "autoRecallMinRepeated": {
       "label": "Auto-Recall Min Repeated",
       "help": "Minimum number of conversation turns before a specific memory can be re-injected in the same session.",
+      "advanced": true
+    },
+    "autoRecallMaxItems": {
+      "label": "Auto-Recall Max Items",
+      "help": "Maximum memories that auto-recall can inject in one turn.",
+      "advanced": true
+    },
+    "autoRecallMaxChars": {
+      "label": "Auto-Recall Max Chars",
+      "help": "Maximum total characters injected by auto-recall in one turn.",
+      "advanced": true
+    },
+    "autoRecallPerItemMaxChars": {
+      "label": "Auto-Recall Per-Item Max Chars",
+      "help": "Maximum characters per injected memory summary.",
       "advanced": true
     },
     "captureAssistant": {
