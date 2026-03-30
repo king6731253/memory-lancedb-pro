@@ -13,6 +13,12 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 
+// Detect CLI mode: when running as a CLI subcommand (e.g. `openclaw memory-pro stats`),
+// OpenClaw sets OPENCLAW_CLI=1 in the process environment. Registration and
+// lifecycle logs are noisy in CLI context (printed to stderr before command output),
+// so we downgrade them to debug level when running in CLI mode.
+const isCliMode = () => process.env.OPENCLAW_CLI === "1";
+
 // Import core components
 import { MemoryStore, validateStoragePath } from "./src/store.js";
 import { createEmbedder, getVectorDimensions } from "./src/embedder.js";
@@ -1737,7 +1743,7 @@ const memoryLanceDBProPlugin = {
           noiseBank,
         });
 
-        api.logger.info(
+        (isCliMode() ? api.logger.debug : api.logger.info)(
           "memory-lancedb-pro: smart extraction enabled (LLM model: "
           + llmModel
           + ", timeoutMs: "
@@ -1981,10 +1987,11 @@ const memoryLanceDBProPlugin = {
     const autoCapturePendingIngressTexts = new Map<string, string[]>();
     const autoCaptureRecentTexts = new Map<string, string[]>();
 
-    api.logger.info(
+    const logReg = isCliMode() ? api.logger.debug : api.logger.info;
+    logReg(
       `memory-lancedb-pro@${pluginVersion}: plugin registered (db: ${resolvedDbPath}, model: ${config.embedding.model || "text-embedding-3-small"}, smartExtraction: ${smartExtractor ? 'ON' : 'OFF'})`
     );
-    api.logger.info(`memory-lancedb-pro: diagnostic build tag loaded (${DIAG_BUILD_TAG})`);
+    logReg(`memory-lancedb-pro: diagnostic build tag loaded (${DIAG_BUILD_TAG})`);
 
     api.on("message_received", (event: any, ctx: any) => {
       const conversationKey = buildAutoCaptureConversationKeyFromIngress(
@@ -2992,7 +2999,9 @@ const memoryLanceDBProPlugin = {
         });
       }
 
-      api.logger.info("self-improvement: integrated hooks registered (agent:bootstrap, command:new, command:reset)");
+      (isCliMode() ? api.logger.debug : api.logger.info)(
+        "self-improvement: integrated hooks registered (agent:bootstrap, command:new, command:reset)"
+      );
     }
 
     // ========================================================================
@@ -3423,7 +3432,9 @@ const memoryLanceDBProPlugin = {
         name: "memory-lancedb-pro.memory-reflection.command-reset",
         description: "Generate reflection log before /reset",
       });
-      api.logger.info("memory-reflection: integrated hooks registered (command:new, command:reset, after_tool_call, before_prompt_build, session_end)");
+      (isCliMode() ? api.logger.debug : api.logger.info)(
+        "memory-reflection: integrated hooks registered (command:new, command:reset, after_tool_call, before_prompt_build, session_end)"
+      );
     }
 
     if (config.sessionStrategy === "systemSessionMemory") {
@@ -3530,10 +3541,10 @@ const memoryLanceDBProPlugin = {
         }
       });
 
-      api.logger.info("session-memory: typed before_reset hook registered for /new session summaries");
+      (isCliMode() ? api.logger.debug : api.logger.info)("session-memory: typed before_reset hook registered for /new session summaries");
     }
     if (config.sessionStrategy === "none") {
-      api.logger.info("session-strategy: using none (plugin memory-reflection hooks disabled)");
+      (isCliMode() ? api.logger.debug : api.logger.info)("session-strategy: using none (plugin memory-reflection hooks disabled)");
     }
 
     // ========================================================================
