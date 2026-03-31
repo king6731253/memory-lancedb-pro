@@ -104,7 +104,15 @@ describe("systemSessionMemory before_reset", () => {
     memoryLanceDBProPlugin.register(api);
 
     assert.equal(typeof api.hooks.before_reset, "function");
-    assert.equal(api.hooks["command:new"], undefined);
+    // selfImprovement defaults to enabled (#391), so command:new may carry
+    // the self-improvement hook — verify sessionMemory didn't register its own.
+    if (api.hooks["command:new"] !== undefined) {
+      assert.equal(
+        api.hooks["command:new"].name,
+        "appendSelfImprovementNote",
+        "command:new hook should only be the self-improvement note, not sessionMemory",
+      );
+    }
 
     await api.hooks.before_reset(
       {

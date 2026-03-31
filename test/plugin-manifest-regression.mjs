@@ -152,7 +152,17 @@ try {
   plugin.register(api);
   assert.equal(services.length, 1, "plugin should register its background service");
   assert.equal(typeof api.hooks.agent_end, "function", "autoCapture should remain enabled by default");
-  assert.equal(api.hooks["command:new"], undefined, "sessionMemory should stay disabled by default");
+  // selfImprovement defaults to enabled (#391), so command:new will have
+  // the appendSelfImprovementNote hook.  Verify sessionMemory's /new hook
+  // is NOT registered by checking that the hook (if any) is the
+  // self-improvement one, not the sessionMemory one.
+  if (api.hooks["command:new"] !== undefined) {
+    assert.equal(
+      api.hooks["command:new"].name,
+      "appendSelfImprovementNote",
+      "command:new hook should only be the self-improvement note, not sessionMemory",
+    );
+  }
   await assert.doesNotReject(
     services[0].stop(),
     "service stop should not throw when no access tracker is configured",
@@ -172,11 +182,16 @@ try {
     },
   });
   plugin.register(sessionDefaultApi);
-  assert.equal(
-    sessionDefaultApi.hooks["command:new"],
-    undefined,
-    "sessionMemory:{} should not implicitly enable the /new hook",
-  );
+  // selfImprovement defaults to enabled (#391), so command:new may carry the
+  // self-improvement hook.  The key invariant is that sessionMemory:{} does NOT
+  // add its own /new hook.
+  if (sessionDefaultApi.hooks["command:new"] !== undefined) {
+    assert.equal(
+      sessionDefaultApi.hooks["command:new"].name,
+      "appendSelfImprovementNote",
+      "sessionMemory:{} should not implicitly enable its own /new hook",
+    );
+  }
 
   const sessionEnabledApi = createMockApi({
     dbPath: path.join(workDir, "db-session-enabled"),
@@ -197,11 +212,14 @@ try {
     "function",
     "sessionMemory.enabled=true should register the async before_reset hook",
   );
-  assert.equal(
-    sessionEnabledApi.hooks["command:new"],
-    undefined,
-    "sessionMemory.enabled=true should not register the blocking command:new hook",
-  );
+  // Same as above: command:new may be the self-improvement hook, not sessionMemory's.
+  if (sessionEnabledApi.hooks["command:new"] !== undefined) {
+    assert.equal(
+      sessionEnabledApi.hooks["command:new"].name,
+      "appendSelfImprovementNote",
+      "sessionMemory.enabled=true should not register the blocking command:new hook",
+    );
+  }
 
   const longText = `${"Long embedding payload. ".repeat(420)}tail`;
   const threshold = 6000;
